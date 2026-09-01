@@ -2002,11 +2002,12 @@ function el(tag, opts = {}, ...children) {
 const FEORACLE_CONFIG = {
   appName: 'FeOracle',
   appSubtitle: 'Consulta para mentores · Impacta',
-  mode: 'local-demo',
+  mode: 'hybrid-demo',
   sources: {
     prediagnostico: 'Base de diagnóstico FeOracle integrada en este archivo',
-    bitacoras: 'Historial de bitácoras pendiente de integración en esta maqueta'
+    bitacoras: 'Historial de bitácoras consultado en tiempo real mediante Power Automate'
   },
+  powerAutomateUrl: 'https://defaultc06fb5591b684b84a14f47d0d837a5.ab.environment.api.powerplatform.com:443/powerautomate/automations/direct/cu/09/workflows/1f4f44aefd734d94a1c0d2505e6ecacb/triggers/manual/paths/invoke?api-version=1&sp=%2Ftriggers%2Fmanual%2Frun&sv=1.0&sig=81zDHCLzyQZRokX7HNUKIhh9WKSiC8J_bXJQqpnz1NQ',
   bitacoraFormUrl: 'https://forms.cloud.microsoft/r/F8angBYN5m'
 };
 
@@ -2030,7 +2031,7 @@ function applyFeOracleConfig() {
   };
 
   bitacoraBtns.forEach(btn => wireLink(btn, FEORACLE_CONFIG.bitacoraFormUrl, 'El formulario de bitácora'));
-  console.info(`FeOracle · modo presentación · ${FEORACLE_LOCAL_RECORDS} prediagnósticos locales`);
+  console.info(`FeOracle · modo híbrido · ${FEORACLE_LOCAL_RECORDS} prediagnósticos locales + bitácoras vía Power Automate`);
 }
 
 applyFeOracleConfig();
@@ -2057,15 +2058,41 @@ function setLoading(isLoading) {
 
 async function consultarEmprendedor(cedula) {
   const normalizedCedula = cleanCedula(cedula);
+
+  // 1) Prediagnóstico: se resuelve localmente para que la demo no dependa
+  // de SharePoint ni de la fuente histórica pendiente de conexión.
   const match = FEORACLE_LOCAL_DATA.find(row => {
     const rowCedula = cleanCedula(row['Documento de identificación']);
     return rowCedula === normalizedCedula;
   });
 
+  // 2) Bitácoras: sí se consultan en tiempo real al flujo de Power Automate.
+  let bitacoras = [];
+  let automateWarning = null;
+
+  try {
+    const response = await fetch(FEORACLE_CONFIG.powerAutomateUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ cedula: normalizedCedula, codigo: 'web' })
+    });
+
+    if (!response.ok) {
+      throw new Error(`Power Automate respondió ${response.status}`);
+    }
+
+    const remote = await response.json();
+    bitacoras = Array.isArray(remote?.bitacoras) ? remote.bitacoras : [];
+  } catch (error) {
+    console.error('FeOracle · error consultando bitácoras:', error);
+    automateWarning = 'El prediagnóstico se cargó, pero no fue posible consultar las bitácoras en este momento.';
+  }
+
   return {
     cedula_recibida: normalizedCedula,
     prediagnostico: match ? [match] : [],
-    bitacoras: []
+    bitacoras,
+    automateWarning
   };
 }
 
@@ -2080,7 +2107,7 @@ queryForm.addEventListener('submit', async (event) => {
   }
 
   setLoading(true);
-  setQueryStatus(`Buscando en ${FEORACLE_LOCAL_RECORDS} diagnósticos FeOracle...`);
+  setQueryStatus('Consultando prediagnóstico y bitácoras FeOracle...');
 
   try {
     const result = await consultarEmprendedor(cedula);
@@ -2103,7 +2130,7 @@ queryForm.addEventListener('submit', async (event) => {
 
     data.bitacoras = prepareBitacoras(bitacoraRows, data.cedula);
     renderDashboard();
-    toast('Prediagnóstico cargado correctamente');
+    if (result.automateWarning) { setQueryStatus(result.automateWarning, true); toast(result.automateWarning, true); } else { setQueryStatus(`${data.bitacoras.length} bitácora(s) encontrada(s).`); toast('Información FeOracle cargada correctamente'); }
   } catch (err) {
     console.error(err);
     setQueryStatus(err.message, true);
